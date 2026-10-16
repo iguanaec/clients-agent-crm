@@ -46,9 +46,9 @@ authRoutes.post("/signup", async (c) => {
   const hash = await hashPassword(b.password!);
   const res = await c.env.DB.batch([
     c.env.DB.prepare("INSERT INTO tenants (id, name) VALUES (?, ?)").bind(tid, business),
-    // Arranca en modo prueba: el agente no responde a nadie hasta agregar números a la lista blanca o apagar el modo.
+    // El agente nace APAGADO (enabled=0) y en modo prueba: primero se usa el CRM con el WhatsApp conectado.
     c.env.DB.prepare(
-      `INSERT INTO agent_config (tenant_id, schedule, shipping, test_mode, test_whitelist) VALUES (?, '{"default":[{"start":"00:00","end":"00:00"}]}', ?, 1, '[]')`,
+      `INSERT INTO agent_config (tenant_id, schedule, shipping, enabled, test_mode, test_whitelist) VALUES (?, '{"default":[{"start":"00:00","end":"00:00"}]}', ?, 0, 1, '[]')`,
     ).bind(tid, JSON.stringify({ freeZones: [], freePrice: 0, pichinchaZones: [], pichinchaPrice: 0, nationalPrice: 0 })),
     c.env.DB.prepare("INSERT INTO users (tenant_id, email, name, password_hash, role) VALUES (?,?,?,?, 'owner')").bind(tid, email, b.name?.trim() || null, hash),
   ]).catch(() => null);

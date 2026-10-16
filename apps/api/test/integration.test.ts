@@ -2,15 +2,12 @@ import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import { buscar, runTool, type ToolCtx } from "../src/agent/tools";
 import type { Env } from "../src/env";
-import { buildConfig } from "../src/plugins";
-import { woocommerce } from "../src/plugins/woocommerce";
 import { resolveOrder } from "../src/services/orders";
 import { applyStock } from "../src/services/stock";
-import { syncTenant } from "../src/services/sync";
 
 // Base D1 y R2 reales (locales, en un directorio temporal) con el esquema de las migraciones.
 let env: Env;
@@ -25,7 +22,6 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => { await dispose?.(); });
-afterEach(() => vi.unstubAllGlobals());
 
 const mkTenant = async (id: string) => {
   await env.DB.prepare("INSERT INTO tenants (id, name) VALUES (?, ?)").bind(id, id).run();
@@ -51,7 +47,7 @@ const addProduct = async (tenant: string, name: string, cats: string, variants: 
   return id;
 };
 
-describe("catálogo propio (sin plugins)", () => {
+describe("catálogo propio", () => {
   it("buscar: filtra por texto, variante y stock; no mezcla tenants", async () => {
     await mkTenant("a"); await mkTenant("b");
     const vestido = await addProduct("a", "Vestido lino", "niña | vestido", [["8", 2, 40], ["10", 0, 42]]);
@@ -108,86 +104,41 @@ describe("catálogo propio (sin plugins)", () => {
   });
 });
 
-describe("plugin WooCommerce de punta a punta (Woo simulado)", () => {
-  const woo = { products: [
-    { id: 100, sku: "VL", name: "Vestido Woo", type: "variable", description: "", short_description: "<p>Lindo</p>", permalink: "https://t.test/v", categories: [{ name: "Vestidos" }], images: [], price: "40", regular_price: "40", sale_price: "", stock_quantity: null, stock_status: "instock" },
-    { id: 200, sku: "GO", name: "Gorro Woo", type: "simple", description: "", short_description: "", permalink: "https://t.test/g", categories: [], images: [], price: "9", regular_price: "9", sale_price: "7", stock_quantity: 4, stock_status: "instock" },
-  ], variations: [
-    { id: 101, regular_price: "40", sale_price: "", price: "40", stock_quantity: 2, stock_status: "instock", attributes: [{ name: "Talla", option: "8" }] },
-    { id: 102, regular_price: "40", sale_price: "", price: "40", stock_quantity: 0, stock_status: "outofstock", attributes: [{ name: "Talla", option: "10" }] },
-  ] };
-  const calls: { url: string; method: string; body?: unknown }[] = [];
-  let wooVars = woo.variations;
+describe("WhatsApp coexistente: el CRM ve todo aunque el agente esté apagado", () => {
+  const payload = (field: string, value: Record<string, unknown>) => ({ entry: [{ changes: [{ field, value: { metadata: { phone_number_id: "555001" }, ...value } }] }] });
+  const rows = (sql: string, ...b: unknown[]) => env.DB.prepare(sql).bind(...b).all<Record<string, unknown>>().then((r) => r.results);
 
-  const stubWoo = () => vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
-    calls.push({ url, method: init.method ?? "GET", body: init.body ? JSON.parse(init.body as string) : undefined });
-    const path = url.split("/wp-json/wc/v3")[1];
-    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
-    if (path.startsWith("/products?per_page=50&page=1")) return json(woo.products);
-    if (path.startsWith("/products?per_page=50")) return json([]);
-    if (path.startsWith("/products/100/variations?")) return json(wooVars);
-    if (path.startsWith("/products/100/variations/batch")) return json({ update: (init.body ? JSON.parse(init.body as string).update : []).map((u: { id: number }) => ({ id: u.id })) });
-    if (path === "/orders" && init.method === "POST") return json({ id: 900, payment_url: "https://t.test/pay/900" });
-    if (path === "/orders/900") return json({ status: init.method === "PUT" ? "processing" : "processing" });
-    if (path.startsWith("/products/200/variations")) return json({});
-    if (path === "/products/200") return json({ stock_quantity: 4, stock_status: "instock" });
-    if (path.startsWith("/products/100/variations/101")) return json({ stock_quantity: 2, stock_status: "instock" });
-    return new Response("not found", { status: 404 });
-  }));
+  it("mensaje entrante y eco del celular se guardan; el agente apagado no responde; el eco pausa al bot", async () => {
+    await mkTenant("co");
+    await env.DB.prepare("UPDATE tenants SET wa_phone_number_id = '555001' WHERE id = 'co'").run();
+    // enabled = 0 es el valor por defecto del esquema
+    expect((await env.DB.prepare("SELECT enabled FROM agent_config WHERE tenant_id='co'").first<{ enabled: number }>())!.enabled).toBe(0);
 
-  it("sincroniza (idempotente), vende con link, y cambia stock en la tienda", async () => {
-    await mkTenant("w");
-    const config = await buildConfig(env, woocommerce, { baseUrl: "https://t.test", consumerKey: "ck", consumerSecret: "cs" }, {});
-    await env.DB.prepare("INSERT INTO tenant_plugins (tenant_id, plugin_id, config) VALUES ('w','woocommerce',?)").bind(JSON.stringify(config)).run();
-    stubWoo();
+    const { handleWebhook } = await import("../src/whatsapp/webhook");
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (u: string) => { calls.push(String(u)); return new Response("{}", { status: 200 }); }) as typeof fetch;
+    try {
+      await handleWebhook(env, payload("messages", { contacts: [{ wa_id: "593911", profile: { name: "Luisa" } }], messages: [{ id: "wamid.IN1", from: "593911", type: "text", text: { body: "Hola, ¿tienen vestidos?" } }] }), "https://x");
+      // el mismo mensaje reenviado por Meta no se duplica
+      await handleWebhook(env, payload("messages", { messages: [{ id: "wamid.IN1", from: "593911", type: "text", text: { body: "Hola, ¿tienen vestidos?" } }] }), "https://x");
+      await handleWebhook(env, payload("smb_message_echoes", { message_echoes: [{ id: "wamid.ECHO1", to: "593911", type: "text", text: { body: "Hola Luisa, sí tenemos" } }] }), "https://x");
+    } finally { globalThis.fetch = orig; }
 
-    expect(await syncTenant(env, "w")).toEqual([{ plugin: "woocommerce", products: 2, variants: 3 }]);
-    const ids = async () => (await env.DB.prepare("SELECT v.id, v.size, v.stock, p.name FROM variants v JOIN products p ON p.id = v.product_id WHERE p.tenant_id='w' ORDER BY v.id").all<{ id: number; size: string; stock: number; name: string }>()).results;
-    const first = await ids();
-    expect(first.map((v) => [v.name, v.size, v.stock])).toEqual([["Vestido Woo", "8", 2], ["Vestido Woo", "10", 0], ["Gorro Woo", "Única", 4]]);
-    await syncTenant(env, "w");
-    expect((await ids()).map((v) => v.id)).toEqual(first.map((v) => v.id)); // los ids locales no cambian entre sincronizaciones
-    expect((await env.DB.prepare("SELECT last_error, last_sync_at FROM tenant_plugins WHERE tenant_id='w'").first<{ last_error: string | null; last_sync_at: string }>())).toMatchObject({ last_error: null });
-
-    // El agente vende por tarjeta: se crea el pedido en Woo y se entrega el link
-    const vestido = (await env.DB.prepare("SELECT id FROM products WHERE tenant_id='w' AND external_id='100'").first<{ id: number }>())!.id;
-    calls.length = 0;
-    const r = await runTool(ctxFor("w"), "crear_pedido", { items: [{ product_id: vestido, talla: "8" }], nombre: "Ana", direccion: "x", ciudad: "Quito", metodo: "tarjeta" });
-    expect(r).toMatchObject({ pedido: "900", link_de_pago: "https://t.test/pay/900", total: 45 });
-    const created = calls.find((c) => c.method === "POST" && c.url.endsWith("/orders"))!;
-    expect(created.body).toMatchObject({ status: "pending", line_items: [{ product_id: 100, variation_id: 101, quantity: 1 }] });
-    expect(await env.DB.prepare("SELECT source, external_id, status FROM orders WHERE tenant_id='w'").first()).toEqual({ source: "woocommerce", external_id: "900", status: "pendiente_pago" });
-
-    // Woo lo marca pagado -> el cron lo confirma
-    await syncTenant(env, "w");
-    expect((await env.DB.prepare("SELECT status FROM orders WHERE tenant_id='w'").first<{ status: string }>())!.status).toBe("confirmado");
-
-    // Cambiar stock desde el CRM va primero a Woo y luego a la copia local
-    calls.length = 0;
-    const v10 = first[1].id;
-    expect(await applyStock(env, "w", [{ variant_id: v10, stock: 6 }])).toEqual([{ id: v10, ok: true, stock: 6 }]);
-    expect(calls.find((c) => c.url.endsWith("/products/100/variations/batch"))?.body).toMatchObject({ update: [{ id: 102, stock_quantity: 6, stock_status: "instock" }] });
-    expect((await env.DB.prepare("SELECT stock FROM variants WHERE id = ?").bind(v10).first<{ stock: number }>())!.stock).toBe(6);
-
-    // Si Woo ya no publica el producto, queda sin stock (no se borra)
-    woo.products.pop();
-    await syncTenant(env, "w");
-    expect((await ids()).find((v) => v.name === "Gorro Woo")!.stock).toBe(0);
+    expect(calls).toEqual([]); // ninguna llamada a Gemini ni a Meta: el agente está apagado
+    const msgs = await rows("SELECT m.direction, m.author, m.body FROM messages m JOIN conversations v ON v.id=m.conversation_id WHERE v.tenant_id='co' ORDER BY m.id");
+    expect(msgs).toEqual([
+      { direction: "in", author: "cliente", body: "Hola, ¿tienen vestidos?" },
+      { direction: "out", author: "app", body: "Hola Luisa, sí tenemos" },
+    ]);
+    const conv = (await rows("SELECT bot_paused_until, state FROM conversations WHERE tenant_id='co'"))[0];
+    expect(conv.bot_paused_until).toBeTruthy(); // el eco desde el celular pausa al bot en ese chat
+    expect((await rows("SELECT name FROM contacts WHERE tenant_id='co'"))[0].name).toBe("Luisa");
   });
 
-  it("si Woo rechaza el cambio de stock, la copia local NO cambia", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 401 })));
-    const v = (await env.DB.prepare("SELECT v.id, v.stock FROM variants v JOIN products p ON p.id=v.product_id WHERE p.tenant_id='w' AND v.size='8'").first<{ id: number; stock: number }>())!;
-    const [res] = await applyStock(env, "w", [{ variant_id: v.id, stock: 99 }]);
-    expect(res.ok).toBe(false);
-    expect((await env.DB.prepare("SELECT stock FROM variants WHERE id = ?").bind(v.id).first<{ stock: number }>())!.stock).toBe(v.stock);
-  });
-
-  it("un plugin desactivado deja de actuar sobre sus productos", async () => {
-    await env.DB.prepare("UPDATE tenant_plugins SET enabled = 0 WHERE tenant_id='w'").run();
-    const v = (await env.DB.prepare("SELECT v.id FROM variants v JOIN products p ON p.id=v.product_id WHERE p.tenant_id='w' LIMIT 1").first<{ id: number }>())!.id;
-    const [res] = await applyStock(env, "w", [{ variant_id: v, stock: 1 }]);
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain("desactivado");
+  it("un número desconocido no crea nada", async () => {
+    const { handleWebhook } = await import("../src/whatsapp/webhook");
+    await handleWebhook(env, { entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: "999" }, messages: [{ id: "wamid.X", from: "1", type: "text", text: { body: "hi" } }] } }] }] }, "https://x");
+    expect(await rows("SELECT 1 FROM messages WHERE wa_message_id = 'wamid.X'")).toEqual([]);
   });
 });

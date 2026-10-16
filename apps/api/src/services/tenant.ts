@@ -7,6 +7,11 @@ export interface TenantRow {
   name: string;
   wa_phone_number_id: string | null;
   wa_access_token: string | null;
+  wa_waba_id: string | null;
+  wa_display_phone: string | null;
+  wa_verified_name: string | null;
+  wa_connected_via: string | null;
+  wa_connected_at: string | null;
   gemini_api_key: string | null;
   enabled: number;
   timezone: string;
@@ -25,7 +30,7 @@ export interface TenantRow {
   model: string;
 }
 
-const SELECT = `SELECT t.id, t.name, t.wa_phone_number_id, t.wa_access_token, t.gemini_api_key, c.* FROM tenants t JOIN agent_config c ON c.tenant_id = t.id`;
+const SELECT = `SELECT t.id, t.name, t.wa_phone_number_id, t.wa_access_token, t.wa_waba_id, t.wa_display_phone, t.wa_verified_name, t.wa_connected_via, t.wa_connected_at, t.gemini_api_key, c.* FROM tenants t JOIN agent_config c ON c.tenant_id = t.id`;
 
 export const loadTenantByPhone = (env: Env, phoneNumberId: string) =>
   env.DB.prepare(`${SELECT} WHERE t.wa_phone_number_id = ?`).bind(phoneNumberId).first<TenantRow>();

@@ -9,6 +9,10 @@ crons = ["*/15 * * * *"]
 [vars]
 # "false" cierra el registro público (las cuentas se crean entonces desde el CRM del dueño → Equipo).
 ALLOW_SIGNUP = "true"
+# Embedded Signup de Meta (conecta el número en coexistencia, sin perder la app de WhatsApp Business del celular).
+# App ID y Configuration ID salen de developers.facebook.com → tu app → WhatsApp → Configuración de inicio de sesión.
+META_APP_ID = ""
+META_CONFIG_ID = ""
 
 [[d1_databases]]
 binding = "DB"

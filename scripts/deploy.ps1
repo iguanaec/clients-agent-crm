@@ -40,6 +40,16 @@ $toml = $toml -replace 'database_id = "[^"]*"', "database_id = `"$($db.uuid)`""
 Set-Content wrangler.toml $toml -Encoding utf8
 Write-Host "D1 lista: $($db.uuid)"
 
+# Embedded Signup (conecta el numero en coexistencia con un clic). Salen de developers.facebook.com > tu app > WhatsApp.
+$metaApp = Read-Host "META_APP_ID de tu app de Meta (Enter para omitir; sin esto la conexion es manual)"
+$metaCfg = if ($metaApp) { Read-Host "META_CONFIG_ID (Configuracion de inicio de sesion de WhatsApp)" } else { "" }
+if ($metaApp -and $metaCfg) {
+  $toml = Get-Content wrangler.toml -Raw
+  $toml = $toml -replace 'META_APP_ID = "[^"]*"', "META_APP_ID = `"$metaApp`""
+  $toml = $toml -replace 'META_CONFIG_ID = "[^"]*"', "META_CONFIG_ID = `"$metaCfg`""
+  Set-Content wrangler.toml $toml -Encoding utf8
+}
+
 Step "Almacen de fotos R2"
 Wr r2 bucket create wa-agent-media
 $buckets = (Wr r2 bucket list 2>$null) -join "`n"

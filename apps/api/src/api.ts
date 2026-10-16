@@ -10,6 +10,7 @@ import { applyStock } from "./services/stock";
 import { syncTenant } from "./services/sync";
 import { loadTenant, tenantWa } from "./services/tenant";
 import { sendImageById, sendText, uploadMedia, waAuthFor } from "./whatsapp/client";
+import { completeEmbeddedSignup, embeddedAvailable } from "./whatsapp/embedded";
 
 export const api = new Hono<AppEnv>();
 
@@ -233,18 +234,48 @@ api.put("/config", requireOwner, async (c) => {
   return c.json({ ok: true });
 });
 
-// ---------- Conexión de WhatsApp y claves del tenant ----------
+// ---------- Conexión de WhatsApp (coexistencia) y claves del tenant ----------
 api.get("/connection", async (c) => {
   const t = await loadTenant(c.env, c.get("auth").tid);
   return c.json({
     name: t?.name,
+    connected: !!(t?.wa_phone_number_id && (t.wa_access_token || c.env.WA_ACCESS_TOKEN)),
     phone_number_id: t?.wa_phone_number_id ?? "",
+    waba_id: t?.wa_waba_id ?? "",
+    display_phone: t?.wa_display_phone ?? null,
+    verified_name: t?.wa_verified_name ?? null,
+    via: t?.wa_connected_via ?? null,
+    connected_at: t?.wa_connected_at ?? null,
+    agent_enabled: !!t?.enabled,
+    embedded: embeddedAvailable(c.env) ? { app_id: c.env.META_APP_ID, config_id: c.env.META_CONFIG_ID } : null,
     has_wa_token: !!t?.wa_access_token, platform_wa_token: !!c.env.WA_ACCESS_TOKEN,
     has_gemini_key: !!t?.gemini_api_key, platform_gemini_key: !!c.env.GEMINI_API_KEY,
     webhook_url: `${new URL(c.req.url).origin}/webhook/whatsapp`,
   });
 });
 
+/** Fin del Embedded Signup: el navegador entrega el `code` y los ids; aquí se canjea y se guarda el token cifrado. */
+api.post("/connection/embedded", requireOwner, async (c) => {
+  const b = await c.req.json<{ code?: string; phone_number_id?: string; waba_id?: string }>();
+  if (!b.code || !/^\d{5,25}$/.test(b.waba_id ?? "") || (b.phone_number_id && !/^\d{5,25}$/.test(b.phone_number_id))) return c.json({ error: "bad_request" }, 400);
+  let conn;
+  try {
+    conn = await completeEmbeddedSignup(c.env, { code: b.code, phoneNumberId: b.phone_number_id, wabaId: b.waba_id! });
+  } catch (e) {
+    return c.json({ error: "meta_error", message: (e as Error).message }, 502);
+  }
+  try {
+    await c.env.DB.prepare(
+      `UPDATE tenants SET wa_phone_number_id = ?, wa_waba_id = ?, wa_access_token = ?, wa_display_phone = ?, wa_verified_name = ?,
+              wa_connected_via = 'embedded', wa_connected_at = datetime('now') WHERE id = ?`,
+    ).bind(conn.phoneNumberId, b.waba_id, await encryptSecret(c.env, conn.token), conn.displayPhone, conn.verifiedName, c.get("auth").tid).run();
+  } catch {
+    return c.json({ error: "phone_number_id_in_use" }, 409);
+  }
+  return c.json({ ok: true, display_phone: conn.displayPhone, verified_name: conn.verifiedName });
+});
+
+/** Conexión manual (Phone Number ID + token pegados), alternativa al Embedded Signup. */
 api.put("/connection", requireOwner, async (c) => {
   const b = await c.req.json<{ phone_number_id?: string; wa_access_token?: string; gemini_api_key?: string }>();
   const tid = c.get("auth").tid;
@@ -252,7 +283,9 @@ api.put("/connection", requireOwner, async (c) => {
     const pid = b.phone_number_id.trim();
     if (pid && !/^\d{5,25}$/.test(pid)) return c.json({ error: "bad_phone_number_id" }, 400);
     try {
-      await c.env.DB.prepare("UPDATE tenants SET wa_phone_number_id = ? WHERE id = ?").bind(pid || null, tid).run();
+      await c.env.DB.prepare(
+        "UPDATE tenants SET wa_phone_number_id = ?, wa_connected_via = CASE WHEN ? IS NULL THEN NULL ELSE coalesce(wa_connected_via, 'manual') END, wa_connected_at = CASE WHEN ? IS NULL THEN NULL ELSE coalesce(wa_connected_at, datetime('now')) END WHERE id = ?",
+      ).bind(pid || null, pid || null, pid || null, tid).run();
     } catch {
       return c.json({ error: "phone_number_id_in_use" }, 409);
     }
@@ -267,17 +300,32 @@ api.put("/connection", requireOwner, async (c) => {
   return c.json({ ok: true });
 });
 
+api.delete("/connection", requireOwner, async (c) => {
+  await c.env.DB.prepare(
+    "UPDATE tenants SET wa_phone_number_id = NULL, wa_waba_id = NULL, wa_access_token = NULL, wa_display_phone = NULL, wa_verified_name = NULL, wa_connected_via = NULL, wa_connected_at = NULL WHERE id = ?",
+  ).bind(c.get("auth").tid).run();
+  return c.json({ ok: true });
+});
+
 api.post("/connection/test", requireOwner, async (c) => {
   const t = await loadTenant(c.env, c.get("auth").tid);
   const wa = t ? await waAuthFor(c.env, t) : null;
-  if (!wa) return c.json({ ok: false, message: "Falta el Phone Number ID o el token de acceso." });
+  if (!wa) return c.json({ ok: false, message: "WhatsApp no está conectado todavía." });
   const res = await fetch(`https://graph.facebook.com/v23.0/${wa.phoneNumberId}?fields=display_phone_number,verified_name`, { headers: { Authorization: `Bearer ${wa.token}` } });
-  if (!res.ok) return c.json({ ok: false, message: `Meta respondió ${res.status}: revisa el token y el Phone Number ID.` });
+  if (!res.ok) return c.json({ ok: false, message: `Meta respondió ${res.status}: vuelve a conectar el número o revisa el token.` });
   const d = (await res.json()) as { display_phone_number?: string; verified_name?: string };
+  await c.env.DB.prepare("UPDATE tenants SET wa_display_phone = ?, wa_verified_name = ? WHERE id = ?").bind(d.display_phone_number ?? null, d.verified_name ?? null, c.get("auth").tid).run();
   return c.json({ ok: true, message: `Conectado: ${d.verified_name ?? ""} ${d.display_phone_number ?? ""}`.trim() });
 });
 
-// ---------- Plugins (WooCommerce, etc.) ----------
+/** Interruptor rápido del agente (cualquier miembro del equipo): apagado, el CRM sigue recibiendo y mostrando todos los chats. */
+api.post("/agent/toggle", async (c) => {
+  const { enabled } = await c.req.json<{ enabled: boolean }>();
+  await c.env.DB.prepare("UPDATE agent_config SET enabled = ? WHERE tenant_id = ?").bind(enabled ? 1 : 0, c.get("auth").tid).run();
+  return c.json({ ok: true, enabled: !!enabled });
+});
+
+// ---------- Plugins (ninguno incluido por ahora; ver docs/PLUGINS.md) ----------
 api.get("/plugins", async (c) => c.json(await listForTenant(c.env, c.get("auth").tid)));
 
 api.put("/plugins/:id", requireOwner, async (c) => {

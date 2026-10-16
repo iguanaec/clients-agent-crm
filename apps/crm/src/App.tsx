@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, biz, session, type Me } from "./api";
+import { useCallback, useEffect, useState } from "react";
+import { api, biz, post, session, type ConnStatus, type Me } from "./api";
 import Agente from "./pages/Agente";
 import Chats from "./pages/Chats";
 import Dashboard from "./pages/Dashboard";
@@ -73,11 +73,22 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [authed, setAuthed] = useState(!!session.token);
   const [tab, setTab] = useState<Tab>("resumen");
+  const [conn, setConn] = useState<ConnStatus | null>(null);
+  const loadConn = useCallback(() => { api<ConnStatus>("/connection").then(setConn).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!authed) return;
+    loadConn();
     api<Me>("/me").then((m) => { biz.timezone = m.tenant.timezone; biz.currency = m.tenant.currency; setMe(m); }).catch(() => {});
-  }, [authed]);
+  }, [authed, loadConn]);
+
+  const toggleAgent = async () => {
+    if (!conn) return;
+    const next = !conn.agent_enabled;
+    if (next && !confirm("¿Encender el agente de IA? Responderá por WhatsApp según el horario y el modo prueba configurados en la pestaña Agente. Puedes apagarlo cuando quieras; los chats se siguen viendo igual.")) return;
+    await post("/agent/toggle", { enabled: next });
+    loadConn();
+  };
 
   if (!authed) return <Login onDone={() => setAuthed(true)} />;
   if (!me) return <p className="muted pad">Cargando…</p>;
@@ -87,16 +98,24 @@ export default function App() {
       <header>
         <strong>{me.tenant.name}</strong>
         <nav>{TABS.map(([k, label]) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>)}</nav>
+        {conn && (
+          <button className={`chip-toggle ${conn.agent_enabled ? "on" : ""}`} onClick={toggleAgent} title="Enciende o apaga el agente de IA. Apagado, sigues viendo y respondiendo tus chats.">
+            Agente: {conn.agent_enabled ? "encendido" : "apagado"}
+          </button>
+        )}
         <span className="muted small">{me.user.email}</span>
         <button className="link" onClick={() => { session.clear(); location.reload(); }}>Salir</button>
       </header>
+      {conn && !conn.connected && tab !== "integraciones" && (
+        <div className="banner">Aún no has conectado tu WhatsApp. <button className="link" onClick={() => setTab("integraciones")}>Conectarlo ahora →</button></div>
+      )}
       <main>
         {tab === "resumen" && <Dashboard goto={setTab} />}
         {tab === "chats" && <Chats />}
         {tab === "stock" && <Stock />}
         {tab === "pedidos" && <Pedidos />}
         {tab === "agente" && <Agente me={me} />}
-        {tab === "integraciones" && <Integraciones me={me} />}
+        {tab === "integraciones" && <Integraciones me={me} onConnectionChange={loadConn} />}
       </main>
     </div>
   );

@@ -18,7 +18,7 @@ export default function Pedidos() {
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load]);
 
   const act = async (id: number, action: "confirm" | "reject") => {
-    if (action === "reject" && !confirm("¿Rechazar y cancelar este pedido? Si es de un plugin (p. ej. WooCommerce) también se cancela allí.")) return;
+    if (action === "reject" && !confirm("¿Rechazar y cancelar este pedido?")) return;
     try { await post(`/orders/${id}/${action}`); } catch (e) { alert(`No se pudo: ${(e as Error).message}`); }
     load();
   };

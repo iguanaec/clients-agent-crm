@@ -143,3 +143,7 @@ fieldset:disabled input, fieldset:disabled textarea { opacity: .6; }
 .photos img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; }
 .photos .ph-item button { position: absolute; top: -6px; right: -6px; border-radius: 99px; padding: 0 6px; line-height: 18px; }
 .srcpill { font-size: 11px; color: var(--muted, #667); border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; }
+
+.chip-toggle { border-radius: 99px; font-size: 12px; padding: 3px 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+.chip-toggle.on { background: var(--bot); color: var(--ink); font-weight: 600; }
+.banner { background: var(--human); padding: 8px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }

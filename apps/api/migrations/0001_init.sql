@@ -4,6 +4,11 @@ CREATE TABLE tenants (
   name TEXT NOT NULL,
   wa_phone_number_id TEXT UNIQUE,
   wa_access_token TEXT,          -- cifrado (lib/crypto); si es NULL se usa WA_ACCESS_TOKEN del entorno
+  wa_waba_id TEXT,
+  wa_display_phone TEXT,         -- número visible, p. ej. +593 99 999 9999
+  wa_verified_name TEXT,
+  wa_connected_via TEXT,         -- 'embedded' (coexistencia por Embedded Signup) o 'manual'
+  wa_connected_at TEXT,
   gemini_api_key TEXT,           -- cifrado; si es NULL se usa GEMINI_API_KEY del entorno
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -22,7 +27,7 @@ CREATE INDEX idx_users_tenant ON users(tenant_id);
 -- Una fila por tenant; `schedule` y `shipping` son JSON editables desde el CRM.
 CREATE TABLE agent_config (
   tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-  enabled INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 0,           -- el agente nace apagado: primero se usa el CRM con el WhatsApp conectado
   timezone TEXT NOT NULL DEFAULT 'America/Guayaquil',
   schedule TEXT NOT NULL,
   shipping TEXT NOT NULL,

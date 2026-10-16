@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, del, localTime, post, put, type Me, type PluginInfo } from "../api";
+import { startEmbeddedSignup } from "../whatsappSignup";
 
 interface Connection {
-  name: string; phone_number_id: string; has_wa_token: boolean; platform_wa_token: boolean;
-  has_gemini_key: boolean; platform_gemini_key: boolean; webhook_url: string;
+  name: string; connected: boolean; phone_number_id: string; waba_id: string; display_phone: string | null; verified_name: string | null;
+  via: "embedded" | "manual" | null; connected_at: string | null; agent_enabled: boolean;
+  embedded: { app_id: string; config_id: string } | null;
+  has_wa_token: boolean; platform_wa_token: boolean; has_gemini_key: boolean; platform_gemini_key: boolean; webhook_url: string;
 }
 interface Member { id: number; email: string; name: string | null; role: "owner" | "agent" }
 
@@ -11,17 +14,34 @@ function Msg({ m }: { m: { ok: boolean; text: string } | null }) {
   return m ? <p className={m.ok ? "ok" : "err"}>{m.text}</p> : null;
 }
 
-function WhatsApp({ owner }: { owner: boolean }) {
+function WhatsApp({ owner, onChange }: { owner: boolean; onChange: () => void }) {
   const [c, setC] = useState<Connection | null>(null);
   const [pid, setPid] = useState("");
   const [token, setToken] = useState("");
   const [gem, setGem] = useState("");
+  const [busy, setBusy] = useState(false);
   const [m, setM] = useState<{ ok: boolean; text: string } | null>(null);
-  const load = useCallback(() => api<Connection>("/connection").then((x) => { setC(x); setPid(x.phone_number_id); }), []);
+  const load = useCallback(() => api<Connection>("/connection").then((x) => { setC(x); setPid(x.phone_number_id); onChange(); }), [onChange]);
   useEffect(() => { load(); }, [load]);
   if (!c) return null;
 
-  const save = async () => {
+  const connect = async () => {
+    if (!c.embedded) return;
+    setBusy(true); setM(null);
+    try {
+      const r = await startEmbeddedSignup(c.embedded.app_id, c.embedded.config_id);
+      const out = await post<{ display_phone: string | null }>("/connection/embedded", { code: r.code, waba_id: r.waba_id, phone_number_id: r.phone_number_id });
+      setM({ ok: true, text: `Conectado ${out.display_phone ?? ""}. Tu app de WhatsApp Business del celular sigue funcionando igual.` });
+      load();
+    } catch (e) {
+      const body = (e as { body?: string }).body;
+      let msg = (e as Error).message;
+      try { msg = (JSON.parse(body ?? "") as { message?: string; error?: string }).message ?? (JSON.parse(body ?? "") as { error?: string }).error ?? msg; } catch { /* usa el mensaje */ }
+      setM({ ok: false, text: msg === "phone_number_id_in_use" ? "Ese número ya está conectado a otra cuenta." : msg });
+    }
+    setBusy(false);
+  };
+  const saveManual = async () => {
     try {
       await put("/connection", { phone_number_id: pid, wa_access_token: token, gemini_api_key: gem });
       setToken(""); setGem(""); setM({ ok: true, text: "Guardado ✓" }); load();
@@ -30,24 +50,50 @@ function WhatsApp({ owner }: { owner: boolean }) {
       setM({ ok: false, text: code === "phone_number_id_in_use" ? "Ese Phone Number ID ya está conectado a otra cuenta." : code === "bad_phone_number_id" ? "El Phone Number ID solo lleva números." : "No se pudo guardar." });
     }
   };
-  const test = async () => { const r = await post<{ ok: boolean; message: string }>("/connection/test"); setM({ ok: r.ok, text: r.message }); };
+  const test = async () => { const r = await post<{ ok: boolean; message: string }>("/connection/test"); setM({ ok: r.ok, text: r.message }); load(); };
+  const disconnect = async () => {
+    if (!confirm("¿Desconectar este WhatsApp del CRM? Los chats guardados se conservan; dejarás de recibir mensajes nuevos aquí. Tu app de WhatsApp Business del celular no se ve afectada.")) return;
+    await del("/connection"); setM(null); load();
+  };
 
   return (
     <section className="panel">
-      <h3>WhatsApp y IA</h3>
-      <p className="muted small">
-        En Meta (developers.facebook.com → tu app → WhatsApp) copia el <b>Phone Number ID</b> y un <b>token permanente</b>. Si el administrador de la plataforma ya configuró un token general, puedes dejarlo vacío.
-      </p>
-      <fieldset disabled={!owner}>
-        <label>Phone Number ID<input value={pid} onChange={(e) => setPid(e.target.value)} placeholder="1234567890" /></label>
-        <label>Token de acceso de WhatsApp {c.has_wa_token ? <span className="ok">· guardado (escribe para reemplazar)</span> : c.platform_wa_token ? <span className="muted">· se usa el de la plataforma</span> : null}
-          <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} /></label>
-        <label>Clave de Gemini propia (opcional) {c.has_gemini_key ? <span className="ok">· guardada</span> : c.platform_gemini_key ? <span className="muted">· se usa la de la plataforma</span> : <span className="err">· falta: el agente no podrá responder</span>}
-          <input type="password" autoComplete="off" value={gem} onChange={(e) => setGem(e.target.value)} /></label>
-      </fieldset>
-      <p className="muted small">Webhook para Meta: <code>{c.webhook_url}</code> (campos <code>messages</code> y <code>smb_message_echoes</code>).</p>
-      <div className="row"><button className="primary" onClick={save} disabled={!owner}>Guardar</button><button onClick={test} disabled={!owner}>Probar conexión</button></div>
+      <h3>WhatsApp {c.connected && <span className="pill">Conectado</span>}</h3>
+      {c.connected ? (
+        <p>
+          <strong>{c.verified_name ?? c.name}</strong> {c.display_phone && <span className="muted">· {c.display_phone}</span>}<br />
+          <span className="muted small">
+            {c.via === "embedded" ? "Conectado en coexistencia: los mensajes llegan al CRM y a la app de WhatsApp Business del celular a la vez; lo que escribas desde el celular también aparece en el CRM."
+              : "Conexión manual (Phone Number ID y token)."}
+            {c.connected_at ? ` Desde ${localTime(c.connected_at, true)}.` : ""}
+          </span>
+        </p>
+      ) : (
+        <p className="muted small">Conecta tu número de WhatsApp Business para ver y responder tus chats desde aquí. El agente de IA se activa aparte y puedes apagarlo cuando quieras sin perder los chats.</p>
+      )}
+      <div className="row tight wrap">
+        {c.embedded ? (
+          <button className="primary" onClick={connect} disabled={!owner || busy}>{busy ? "Esperando a Meta…" : c.connected ? "Volver a conectar" : "Conectar WhatsApp Business (coexistencia)"}</button>
+        ) : (
+          !c.connected && <p className="note small">La conexión con un clic todavía no está habilitada en esta plataforma (faltan <code>META_APP_ID</code> y <code>META_CONFIG_ID</code>). Mientras tanto usa la conexión manual de abajo.</p>
+        )}
+        {c.connected && <button onClick={test} disabled={!owner}>Probar conexión</button>}
+        {c.connected && <button className="danger" onClick={disconnect} disabled={!owner}>Desconectar</button>}
+      </div>
       <Msg m={m} />
+
+      <details style={{ marginTop: 14 }}>
+        <summary className="muted small">Conexión manual y clave de IA</summary>
+        <fieldset disabled={!owner}>
+          <label>Phone Number ID<input value={pid} onChange={(e) => setPid(e.target.value)} placeholder="1234567890" /></label>
+          <label>Token de acceso de WhatsApp {c.has_wa_token ? <span className="ok">· guardado (escribe para reemplazar)</span> : c.platform_wa_token ? <span className="muted">· se usa el de la plataforma</span> : null}
+            <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} /></label>
+          <label>Clave de Gemini propia (opcional) {c.has_gemini_key ? <span className="ok">· guardada</span> : c.platform_gemini_key ? <span className="muted">· se usa la de la plataforma</span> : <span className="err">· falta: el agente no podrá responder</span>}
+            <input type="password" autoComplete="off" value={gem} onChange={(e) => setGem(e.target.value)} /></label>
+        </fieldset>
+        <p className="muted small">Webhook para Meta (lo configura quien administra la plataforma una sola vez): <code>{c.webhook_url}</code> con los campos <code>messages</code> y <code>smb_message_echoes</code>.</p>
+        <button className="primary" onClick={saveManual} disabled={!owner}>Guardar</button>
+      </details>
     </section>
   );
 }
@@ -153,7 +199,7 @@ function Team({ me }: { me: Me }) {
   );
 }
 
-export default function Integraciones({ me }: { me: Me }) {
+export default function Integraciones({ me, onConnectionChange }: { me: Me; onConnectionChange: () => void }) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const load = useCallback(() => api<PluginInfo[]>("/plugins").then(setPlugins), []);
   useEffect(() => { load(); }, [load]);
@@ -162,9 +208,9 @@ export default function Integraciones({ me }: { me: Me }) {
     <div className="form">
       <h2>Integraciones</h2>
       {!owner && <p className="note">Solo el dueño de la cuenta puede cambiar las integraciones.</p>}
-      <WhatsApp owner={owner} />
-      <h3 className="sect">Plugins</h3>
-      <p className="muted small">El agente y el CRM funcionan solos con el catálogo propio (pestaña Catálogo). Los plugins conectan fuentes externas; instala solo el que uses.</p>
+      <WhatsApp owner={owner} onChange={onConnectionChange} />
+      {plugins.length > 0 && <><h3 className="sect">Plugins</h3>
+      <p className="muted small">El agente y el CRM funcionan solos con el catálogo propio (pestaña Catálogo). Los plugins conectan fuentes externas; instala solo el que uses.</p></>}
       {plugins.map((p) => <Plugin key={`${p.id}-${p.installed}-${p.enabled}`} p={p} owner={owner} reload={load} />)}
       <Team me={me} />
     </div>

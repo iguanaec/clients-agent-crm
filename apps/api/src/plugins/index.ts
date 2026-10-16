@@ -1,12 +1,10 @@
 import type { Env } from "../env";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
-import { woocommerce } from "./woocommerce";
 import type { CommercePlugin, PluginCtx } from "./types";
 
 /** Para añadir un plugin nuevo: implementar `CommercePlugin` y registrarlo aquí. */
-export const PLUGINS: Record<string, CommercePlugin> = {
-  [woocommerce.id]: woocommerce,
-};
+/** Vacío por ahora: el núcleo funciona con el catálogo propio. */
+export const PLUGINS: Record<string, CommercePlugin> = {};
 
 export const getPlugin = (id: string) => PLUGINS[id];
 

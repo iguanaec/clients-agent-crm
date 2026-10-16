@@ -14,6 +14,7 @@ export const session = {
 /** Zona horaria del negocio (la entrega /me al iniciar sesión); se usa para mostrar horas. */
 export const biz = { timezone: "America/Guayaquil", currency: "USD" };
 
+export interface ConnStatus { connected: boolean; display_phone: string | null; agent_enabled: boolean }
 export interface Me {
   user: { id: number; email: string; name: string | null; role: "owner" | "agent" };
   tenant: { id: string; name: string; timezone: string; currency: string };

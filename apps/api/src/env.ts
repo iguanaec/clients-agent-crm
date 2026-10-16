@@ -5,6 +5,9 @@ export interface Env {
   /** Meta (una app de la plataforma para todos los tenants). */
   WA_VERIFY_TOKEN: string;
   WA_APP_SECRET: string;
+  /** App de Meta para Embedded Signup (coexistencia). Ambos son públicos (no secretos). */
+  META_APP_ID?: string;
+  META_CONFIG_ID?: string;
   /** Token de WhatsApp por defecto; cada tenant puede guardar el suyo en el CRM. */
   WA_ACCESS_TOKEN?: string;
   /** Clave de Gemini por defecto; cada tenant puede guardar la suya. */
