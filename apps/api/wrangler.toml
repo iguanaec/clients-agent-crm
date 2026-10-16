@@ -1,0 +1,24 @@
+name = "wa-agent-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+# "false" cierra el registro público (las cuentas se crean entonces desde el CRM del dueño → Equipo).
+ALLOW_SIGNUP = "true"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wa-agent"
+database_id = "REEMPLAZAR-con-el-id-que-imprime-deploy"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wa-agent-media"
+
+[images]
+binding = "IMAGES"

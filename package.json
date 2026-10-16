@@ -1,0 +1,15 @@
+{
+  "name": "wa-agent-crm",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm test -w @wa/api",
+    "typecheck": "npm run typecheck -w @wa/api && npm run typecheck -w @wa/crm",
+    "build": "npm run build -w @wa/crm",
+    "dev": "npm run dev -w @wa/api",
+    "deploy": "npm run deploy -w @wa/api"
+  }
+}
